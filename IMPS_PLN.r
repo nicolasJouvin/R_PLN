@@ -5,6 +5,17 @@ library(progress)
 source(file = 'utils.r')
 setOldClass("torch_tensor")
 
+q = 5L
+Y <- torch_tensor(as.matrix(read.csv('Y.csv')))
+O <- torch_tensor(as.matrix(read.csv('O.csv')))
+covariates <- torch_tensor(as.matrix(read.csv('covariates.csv')))
+true_Sigma <- torch_tensor(as.matrix(read.csv('true_5_Sigma.csv')))
+true_Theta <- torch_tensor(as.matrix(read.csv('true_beta.csv')))
+true_C <- C_from_Sigma(true_Sigma,q)
+vizmat(as.matrix(torch_matmul(true_C, torch_transpose(true_C, 2,1))))
+
+
+
 log_P_WgivenY <- function(Y, O, covariates, W,C,B_zero){
   q <- dim(W)[length(dim(W))]
   len <- length(dim(W))
@@ -182,8 +193,8 @@ IMPS_PLN <- R6Class("IMPS_PLN",
                 
                 fit = function(N_iter_max, lr = 0.1, acc = 0.01){
                   N_samples <- as.integer(1/acc)
-                  model_optimizer <- optim_rprop(c(self$Theta, self$C), lr = lr)
-                  
+                  #model_optimizer <- optim_rprop(c(self$Theta, self$C), lr = lr)
+                  model_optimizer <- optim_rprop(c(self$Theta), lr = lr)
                   pb <- progress_bar$new(total=N_iter_max, width=60, clear=F,
                                          format = " (:spin) [:bar] :percent IN :elapsed")
                   for (j in 1:N_iter_max){
@@ -292,9 +303,6 @@ IMPS_PLN <- R6Class("IMPS_PLN",
                   denum <- torch_mean(self$weights, dim = 1)$unsqueeze(2)$unsqueeze(3)
                   return(torch_mean(num/denum -  self$grad_log_outer_product_Theta(), dim = 1))
                 }
-                
-                
-                
               ),
               private = list(
               )
@@ -304,18 +312,15 @@ IMPS_PLN <- R6Class("IMPS_PLN",
 imps <- IMPS_PLN$new(Y,O,covariates,q)
 imps$C <- torch_clone(true_C) + 0*torch_randn(true_C$shape)
 imps$Theta <- true_Theta + 0*torch_randn(true_Theta$shape)
-imps$fit(30L, acc = 0.008)
+imps$fit(30L, acc = 0.001)
 how_much()
+
+torch_randn(true_Theta$shape)
+
+MSE(0.1*torch_randn(true_Theta$shape))
 
 vizmat(as.matrix(torch_matmul(imps$C, torch_transpose(imps$C, 2,1))))
 vizmat(as.matrix(torch_matmul(true_C, torch_transpose(true_C,2,1))))
-
-X <- how_much()
-torch_float64(X)
-torch_sum(torch_tensor((X< 1.96)))/60
-torch_sum(X)
-hess_log <- imps$compute_hess_log_p_theta()
-C_hess <- C_from_Sigma(-hess_log, 30)
 
 
 how_much <- function(){
@@ -329,16 +334,7 @@ how_much <- function(){
   return(torch_sum(X<1.96)/np)
 }
 
-torch_mean(torch_matmul(C_hess, torch_transpose(C_hess, 2,1)) + hess_log)
 
-q = 5L
-Y <- torch_tensor(as.matrix(read.csv('Y.csv')))
-O <- torch_tensor(as.matrix(read.csv('O.csv')))
-covariates <- torch_tensor(as.matrix(read.csv('covariates.csv')))
-true_Sigma <- torch_tensor(as.matrix(read.csv('true_5_Sigma.csv')))
-true_Theta <- torch_tensor(as.matrix(read.csv('true_beta.csv')))
-true_C <- C_from_Sigma(true_Sigma,q)
-vizmat(as.matrix(torch_matmul(true_C, torch_transpose(true_C, 2,1))))
 
 
 
