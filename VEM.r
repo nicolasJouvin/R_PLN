@@ -1,7 +1,7 @@
 library(torch)
 library(R6)
 source(file = 'utils.r')
-
+setwd("~/Documents/R_PLN")
 
 
 
@@ -70,6 +70,7 @@ VEM_PLN <- R6Class("VEM_PLN",
                        optimizer = optim_rprop(c(self$Theta, self$M, self$S), lr = lr)
                        for (i in 1:N_iter){
                          optimizer$zero_grad()
+                         self$A = torch_exp(self$O + torch_matmul(self$covariates,self$Theta) + self$M + 1/2*(self$S)**2)
                          loss = - ELBO(self$Y, self$O, self$covariates, self$M, self$S, self$Sigma, self$Theta)
                          loss$backward()
                          optimizer$step()
@@ -80,25 +81,51 @@ VEM_PLN <- R6Class("VEM_PLN",
                        }
                      }, 
                      
-                     get_Dn = function(){
-                       self$A = torch_exp(self$O + torch_matmul(self$covariates,self$Theta) + self$M + 1/2*(self$S)**2)
+                     get_Dn_Theta = function(){
+                       
                        YmoinsA = self$Y - self$A 
                        outer_prod_YmoinsA = torch_matmul(YmoinsA$unsqueeze(3), YmoinsA$unsqueeze(2))
                        outer_prod_X = torch_matmul(self$covariates$unsqueeze(3), self$covariates$unsqueeze(2))
                        pr('outer prod shape', outer_prod_YmoinsA$shape)
                        pr('outer_prod X shape', outer_prod_X$shape)
-                       kron 
-                       pr('res', torch_kron(outer_prod_YmoinsA, outer_prod_X))
+                       size_kron = outer_prod_YmoinsA$shape[2]*outer_prod_X$shape[2]
+                       res = torch_zeros(size_kron, size_kron)
+                       for ( i in 1:self$n){
+                         res = res + torch_kron(outer_prod_YmoinsA[i,,],outer_prod_X[i,,])
                        }
+                       return(res/self$n)
+                       },
+                     get_Cn_Theta = function(){
+                       
+                       for (i in 1:n){
+                         C_i = torch_diag(2/(2+self$S[i,]^2*self$A[i,]))
+                         
+                       }
+                     },
+                    get_mat_i_Theta = function(i){
+                      D_i = torch_diag(self$A[i,])
+                      C_i = torch_diag(2/(2+self$S[i,]^2*self$A[i,]))
+                      D_i_inv_sqrt = torch_diag(self$A[i,]**(-1/2))
+                      invB_i = C_i + torch_matmul(torch_matmul(D_i_inv_sqrt, self$Sigma), D_i_inv_sqrt)
+                      B_i = torch_inv(invB_i)
+                      }
+                     
                    )
                    )
 
 
 
 pln = VEM_PLN$new(Y,O,covariates)
-pln$fit(1,0.1)
-pln$get_Dn()
+pln$fit(10,0.1)
+
+pln$get_mat_i_Theta(1)
+
+
+pln$A
+torch_diag(2/(2+self$S[i,]^2*self$A[i,]))
+pln$get_Dn_Theta()
 #pr('MSE', MSE(pln$Sigma - true_Sigma))
 x = torch_randn(100,10,10)
 y = torch_randn(1,10,10)
 torch_kron(x,y)
+

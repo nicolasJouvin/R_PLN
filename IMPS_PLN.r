@@ -3,6 +3,7 @@ library(R6)
 library(ggplot2)
 library(progress)
 source(file = 'utils.r')
+source(file = 'VEM.r')
 setOldClass("torch_tensor")
 
 q = 5L
@@ -13,6 +14,23 @@ true_Sigma <- torch_tensor(as.matrix(read.csv('true_5_Sigma.csv')))
 true_Theta <- torch_tensor(as.matrix(read.csv('true_beta.csv')))
 true_C <- C_from_Sigma(true_Sigma,q)
 vizmat(as.matrix(torch_matmul(true_C, torch_transpose(true_C, 2,1))))
+
+d = 2L
+n = 1100L
+p = 40L
+q = 15L
+### Sampling some data ###
+O <-  torch_tensor(matrix(0,nrow = n, ncol = p))
+covariates <- torch_tensor(matrix(rnorm(n*d),nrow = n, ncol = d))
+true_Theta <- torch_tensor(matrix(rnorm(d*p),nrow = d, ncol = p))
+true_C <- torch_tensor(matrix(rnorm(p*q), nrow = p, ncol = q) )/3
+true_Sigma <- torch_matmul(true_C,torch_transpose(true_C, 2,1))
+true_Theta <- torch_tensor(matrix(rnorm(d*p),nrow = d, ncol = p))/2
+Y <- sample_PLN(true_C,true_Theta,O,covariates)
+
+
+vizmat(as.matrix(true_Sigma))
+
 
 
 
@@ -47,19 +65,7 @@ sample_gaussians <- function(N_samples, mu, sqrt_Sigma){
   W_p <- torch_matmul(sqrt_Sigma$unsqueeze(1), torch_randn(N_samples,1,q,1))$squeeze() + mu$unsqueeze(1)
   return(W_p)  
 }
-#d = 2L
-#n = 200L
-#p = 15L
-#q = 5L
-#N_samples = 200L
-### Sampling some data ###
-#O <-  torch_tensor(matrix(1,nrow = n, ncol = p))
-#covariates <- torch_tensor(matrix(rnorm(n),nrow = n, ncol = d))
-#true_Theta <- torch_tensor(matrix(rnorm(d*p),nrow = d, ncol = p))
-#true_C <- torch_tensor(matrix(rnorm(p*q), nrow = p, ncol = q) )
-#true_Sigma <- torch_matmul(true_C,torch_transpose(true_C, 2,1))
-#B_zero <- torch_tensor(matrix(rnorm(n),nrow = d, ncol = p))
-#Y <- sample_PLN(true_C,true_Theta,O,covariates, B_zero,ZI= FALSE)
+
 
 full_C_from_Sigma <- function(Sigma,q){
   USV <- linalg_svd(Sigma)
@@ -70,6 +76,17 @@ full_C_from_Sigma <- function(Sigma,q){
   return(torch_multiply(U, torch_sqrt(S)))
   
 }
+how_much <- function(){
+  vec_imps_Theta <- imps$Theta$flatten()
+  np <- vec_imps_Theta$shape[1]
+  vec_Theta <- true_Theta$flatten()
+  hess_log <- imps$compute_hess_log_p_theta()
+  C_hess <- full_C_from_Sigma(-hess_log, 30)
+  X <- torch_abs(torch_sqrt(imps$n)*torch_matmul(C_hess, vec_imps_Theta - vec_Theta))
+  #percentage_inside <- torch_mean(X < 1.96)
+  return(torch_sum(X<1.96)/np)
+}
+
 
 
 C_from_Sigma <- function(Sigma, q){
@@ -209,7 +226,8 @@ IMPS_PLN <- R6Class("IMPS_PLN",
                     self$C$set_grad_(-self$get_grad_C()$detach())
                     model_optimizer$step()
                     pr('log like', log_like)
-                    pr('MSE', MSE(torch_matmul(self$C, torch_transpose(self$C, 2,1)) -true_Sigma))
+                    pr('MSE Sigma', MSE(torch_matmul(self$C, torch_transpose(self$C, 2,1)) -true_Sigma))
+                    pr('MSE beta', MSE(self$Theta - true_Theta))
                     }
                 },
                 get_one_p_theta = function(i){
@@ -307,32 +325,20 @@ IMPS_PLN <- R6Class("IMPS_PLN",
               private = list(
               )
       )
-
+pln = VEM_PLN$new(Y,O,covariates)
+pln$fit(800,0.1)
 
 imps <- IMPS_PLN$new(Y,O,covariates,q)
-imps$C <- torch_clone(true_C) + 0*torch_randn(true_C$shape)
-imps$Theta <- true_Theta + 0*torch_randn(true_Theta$shape)
-imps$fit(30L, acc = 0.001)
+imps$C <- torch_clone(true_C) #torch_clone(true_C) + 0*torch_randn(true_C$shape)
+imps$Theta <- pln$Theta#true_Theta + 0.4*torch_randn(true_Theta$shape)
+imps$fit(1L, acc = 0.008, lr = 0)
 how_much()
-
-torch_randn(true_Theta$shape)
-
-MSE(0.1*torch_randn(true_Theta$shape))
 
 vizmat(as.matrix(torch_matmul(imps$C, torch_transpose(imps$C, 2,1))))
 vizmat(as.matrix(torch_matmul(true_C, torch_transpose(true_C,2,1))))
 
 
-how_much <- function(){
-  vec_imps_Theta <- imps$Theta$flatten()
-  np <- vec_imps_Theta$shape[1]
-  vec_Theta <- true_Theta$flatten()
-  hess_log <- imps$compute_hess_log_p_theta()
-  C_hess <- full_C_from_Sigma(-hess_log, 30)
-  X <- torch_abs(torch_sqrt(imps$n)*torch_matmul(C_hess, vec_imps_Theta - vec_Theta))
-  #percentage_inside <- torch_mean(X < 1.96)
-  return(torch_sum(X<1.96)/np)
-}
+
 
 
 
