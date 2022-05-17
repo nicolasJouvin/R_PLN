@@ -1,4 +1,4 @@
-library('reshape2')
+#library('reshape2')
 library('torch')
 vizmat <- function(x){
   m1 = min(x);   m2 = max(x)
@@ -64,6 +64,36 @@ log_stirling <- function(n_){
   n_ <- n_+ (n_==0)
   return(torch_log(torch_sqrt(2*pi*n_)) + n_*log(n_/exp(1))) 
 }
+
+C_from_Sigma <- function(Sigma, q){
+  USV <- linalg_svd(Sigma)
+  U <- USV[[1]]
+  S <- USV[[2]]
+  V <- USV[[3]]
+  S[(q+1):S$shape[1]] <- 0   
+  return(torch_multiply(U[,1:q], torch_sqrt(S[1:q])))
+}
+
+how_much <- function(Theta, true_Theta, hess, nb_minor,n){
+  vec_Theta <- Theta$flatten()
+  np <- vec_Theta$shape[1]
+  vec_true_Theta <- true_Theta$flatten()
+  C_hess <- full_C_from_Sigma(hess, nb_minor)
+  X <- torch_abs(torch_sqrt(n)*torch_matmul(C_hess, vec_Theta - vec_true_Theta))
+  return(torch_sum(X<1.96)/np)
+}
+
+
+full_C_from_Sigma <- function(Sigma,q){
+  USV <- linalg_svd(Sigma)
+  U <- USV[[1]]
+  S <- USV[[2]]
+  V <- USV[[3]]
+  S[(q+1):S$shape[1]] <- 0   
+  return(torch_multiply(U, torch_sqrt(S)))
+}
+
+
 
 
 
