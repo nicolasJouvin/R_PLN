@@ -1,6 +1,6 @@
 library(torch)
 library(R6)
-setwd("~/Documents/These/R_PLN")
+#setwd("~/Documents/These/R_PLN")
 source(file = 'utils.r')
 source(file = 'IMPS_PLN.r')
 
@@ -126,10 +126,90 @@ VEM_PLN <- R6Class("VEM_PLN",
                    )
                    )
 
-d = 3L
-n = 500L
-p = 10L
-q = p
+
+ELBO_PCA <- function(Y, O, covariates, M, S, C, Theta){
+  ## compute the ELBO with a PCA parametrization'''
+  n = Y$shape[1]
+  q = C$shape[2]
+  # Store some variables that will need to be computed twice
+  A = O + torch_mm(covariates, Theta) + torch_mm(M, C$t())
+  SrondS = torch_multiply(S, S)
+  # Next, we add the four terms of the ELBO_PCA
+  YA = torch_sum(torch_multiply(Y, A))
+  moinsexpAplusSrondSCCT = torch_sum(-torch_exp(A + 1 / 2 *
+                                                  torch_mm(SrondS, torch_multiply(C, C)$t())))
+  moinslogSrondS = 1 / 2 * torch_sum(torch_log(SrondS))
+  MMplusSrondS = torch_sum(-1 / 2 * (torch_multiply(M, M) + torch_multiply(S, S)))
+  log_stirlingY = torch_sum(log_stirling(Y))
+return(YA + moinsexpAplusSrondSCCT + moinslogSrondS + MMplusSrondS - log_stirlingY + n * q / 2)
+}
+
+VEM_PLNPCA <- R6Class("VEM_PLNPCA", 
+                   public = list(
+                     Y = NULL, 
+                     O = NULL,
+                     covariates = NULL, 
+                     p = NULL, 
+                     q = NULL,
+                     n = NULL, 
+                     d = NULL, 
+                     M = NULL, 
+                     S = NULL, 
+                     A = NULL, 
+                     C = NULL,
+                     Sigma = NULL, 
+                     Theta = NULL,
+                     initialize = function(Y,O,covariates,q){
+                       self$Y <- Y
+                       self$O <- O
+                       self$covariates <- covariates
+                       self$q = q
+                       self$p <- Y$shape[2]
+                       self$n <- Y$shape[1]
+                       self$d <- covariates$shape[2]
+                       ## Variational parameters
+                       self$M <- torch_zeros(self$n, self$q, requires_grad = TRUE)
+                       self$S <- torch_ones(self$n, self$q, requires_grad = TRUE)
+                       ## Model parameters 
+                       self$Theta <- torch_randn(self$d,self$p, requires_grad = TRUE)
+                       self$C = torch_randn(self$p, self$q, requires_grad = TRUE)
+                       self$Sigma <- torch_eye(self$p)
+                     },
+                     get_Sigma = function(){
+                       return(torch_mm(self$C, self$C$t()))
+                     },
+                     fit = function(N_iter, lr, verbose = FALSE){
+                       optimizer = optim_rprop(c(self$Theta, self$C, self$M, self$S), lr = lr)
+                       for (i in 1:N_iter){
+                         optimizer$zero_grad()
+                         #self$A = torch_exp(self$O + torch_matmul(self$covariates,self$Theta) + self$M + 1/2*(self$S)**2)
+                         loss = - ELBO_PCA(self$Y, self$O, self$covariates, self$M, self$S, self$C, self$Theta)
+                         loss$backward()
+                         #pr('grad C', self$C$grad)
+                         optimizer$step()
+                         #self$Sigma <- first_closed_Sigma(self$M, self$S)
+                         if(verbose){
+                           pr('ELBO', -loss$item()/(self$n))
+                           pr('MSE Sigma', MSE(self$get_Sigma() - true_Sigma))
+                           pr('MSE Theta', MSE(self$Theta- true_Theta))
+                         }
+                       }
+                     }
+                   )
+)
+
+plnpca = VEM_PLNPCA$new(Y,O,covariates, q)
+plnpca$fit(500,0.1,verbose = TRUE)
+plnpca$Theta
+true_Theta
+
+d = 1L
+n = 2000L
+p = 2000L
+q = 10L
+
+
+
 
 ### Sampling some data ###
 O <-  torch_tensor(matrix(0,nrow = n, ncol = p))
@@ -140,7 +220,7 @@ true_Sigma <- torch_matmul(true_C,torch_transpose(true_C, 2,1))
 true_Theta <- torch_tensor(matrix(rnorm(d*p),nrow = d, ncol = p))/2
 true_C <- C_from_Sigma(true_Sigma,q)
 Y <- sample_PLN(true_C,true_Theta,O,covariates)
-
+vizmat(as.matrix(true_Sigma))
 nb_iter = 15
 var_percentage = torch_zeros(nb_iter)
 imps_percentage = torch_zeros(nb_iter)
