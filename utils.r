@@ -94,6 +94,118 @@ full_C_from_Sigma <- function(Sigma,q){
 }
 
 
+## Initialisation for the PLN model
+
+Poisson_reg <- function( Y, O, covariates, Niter_max=300,
+                         tol=0.001, lr=0.005, verbose=FALSE){
+  #Run a gradient ascent to maximize the log likelihood, using
+  #      pytorch autodifferentiation. The log likelihood considered is
+  #      the one from a poisson regression model. It is roughly the
+  #      same as PLN without the latent layer Z.
+  
+  #      Args:
+  #          Y: torch.tensor. Counts with size (n,p)
+  #          0: torch.tensor. Offset, size (n,p)
+  #          covariates: torch.tensor. Covariates, size (n,d)
+  #          Niter_max: int, optional. The maximum number of iteration.
+  #              Default is 300.
+  #          tol: non negative float, optional. The tolerance criteria.
+  #              Will stop if the norm of the gradient is less than
+  #              or equal to this threshold. Default is 0.001.
+  #          lr: positive float, optional. Learning rate for the gradient ascent.
+  #              Default is 0.005.
+  #          verbose: bool, optional. If True, will print some stats.
+  
+  #        Returns : None. Update the parameter beta. You can access it
+  #              by calling self.beta.
+  
+  # Initialization of beta of size (d,p)
+  beta = torch_randn(covariates$shape[2],
+                     Y$shape[2],requires_grad=TRUE)
+  optimizer = optim_rprop(c(beta), lr=lr)
+  i = 0
+  grad_norm = 2 * tol  # Criterion
+  while (as.logical((i < Niter_max) & (grad_norm > tol))){
+    optimizer$zero_grad()
+    loss = -compute_poiss_loglike(Y, O, covariates, beta)
+    loss$backward()
+    optimizer$step()
+    grad_norm = torch_norm(beta$grad)
+    i = i + 1
+    if (verbose){
+      if(i %% 10 == 0){
+        pr('log like : ', -loss)
+        pr('grad_norm : ', grad_norm)
+      }
+    }
+    
+  }
+  if (verbose){
+    if (i < Niter_max){
+      print(paste('Tolerance reached in ', as.character(i),' iterations'))
+    }
+    else{
+      pr('Maxium number of iterations reached : ', Niter_max)   
+      pr('grad norm', grad_norm)
+    }
+  }
+  return(beta)
+}
+
+
+compute_poiss_loglike = function(Y, O, covariates, beta){
+  # Compute the log likelihood of a Poisson regression
+  # Matrix multiplication of X and beta.
+  XB = torch_matmul(covariates$unsqueeze(2), beta$unsqueeze(1))$squeeze()
+  # Returns the formula of the log likelihood of a poisson regression model.
+  return(torch_sum(-torch_exp(O + XB) + torch_multiply(Y, O + XB)))
+}
+
+init_Sigma <- function(Y, O, covariates, beta){
+  # Initialization for Sigma for the PLN model. Take the log of Y
+  #   (careful when Y=0), remove the covariates effects X@beta and
+  #   then do as a MLE for Gaussians samples.
+  #   Args :
+  #           Y: torch.tensor. Samples with size (n,p)
+  #           0: torch.tensor. Offset, size (n,p)
+  #           covariates: torch.tensor. Covariates, size (n,d)
+  #           beta: torch.tensor of size (d,p)
+  #   Returns : torch.tensor of size (p,p).
+  #   
+  # Take the log of Y, and be careful when Y = 0. If Y = 0,
+  # then we set the log(Y) as 0.
+  log_Y = torch_log(Y + (Y == 0) * exp(-2))
+  # we remove the mean so that we see only the covariances
+  log_Y_c = log_Y - torch_matmul(covariates$unsqueeze(2), beta$unsqueeze(1))$squeeze()
+  # MLE in a Gaussian setting
+  n = Y$shape[1]
+  Sigma_hat = 1/(n-1)*(torch_mm(log_Y_c$t(),log_Y_c))
+  return(Sigma_hat)
+}
+
+
+init_C <- function(Y, O, covariates, beta, q){
+  # Inititalization for C for the PLN model. Get a first
+  #   guess for Sigma that is easier to estimate and then takes
+  #   the q largest eigenvectors to get C.
+  #   Args :
+  #       Y: torch.tensor. Samples with size (n,p)
+  #       0: torch.tensor. Offset, size (n,p)
+  #       covarites: torch.tensor. Covariates, size (n,d)
+  #       beta: torch.tensor of size (d,p)
+  #       q: int. The dimension of the latent space, i.e. the reducted dimension.
+  #   Returns :
+  #       torch.tensor of size (p,q). The initialization of C.
+  # 
+  # get a guess for Sigma
+  Sigma_hat = init_Sigma(Y, O, covariates, beta)$detach()
+  # taking the q largest eigenvectors
+  C = C_from_Sigma(Sigma_hat, q)
+  return(C)
+}
+
+
+
 
 
 
