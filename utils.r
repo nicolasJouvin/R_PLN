@@ -1,4 +1,4 @@
-#library('reshape2')
+library('reshape2')
 library('torch')
 vizmat <- function(x){
   m1 = min(x);   m2 = max(x)
