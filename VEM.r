@@ -2,17 +2,15 @@ library(torch)
 library(R6)
 #setwd("~/Documents/These/R_PLN")
 source(file = 'utils.r')
-source(file = 'IMPS_PLN.r')
 
-
-
-Y <- torch_tensor(as.matrix(read.csv('Y.csv')))
-O <- torch_tensor(as.matrix(read.csv('O.csv')))
-covariates <- torch_tensor(as.matrix(read.csv('covariates.csv')))
-true_Sigma <- torch_tensor(as.matrix(read.csv('true_5_Sigma.csv')))
-#true_C <- torch_cholesky(true_Sigma)
-true_Theta <- torch_tensor(as.matrix(read.csv('true_beta.csv')))
-#Variational parameters 
+# 
+# 
+# Y <- torch_tensor(as.matrix(read.csv('Y.csv')))
+# O <- torch_tensor(as.matrix(read.csv('O.csv')))
+# covariates <- torch_tensor(as.matrix(read.csv('covariates.csv')))
+# true_Sigma <- torch_tensor(as.matrix(read.csv('true_5_Sigma.csv')))
+# #true_C <- torch_cholesky(true_Sigma)
+# true_Theta <- torch_tensor(as.matrix(read.csv('true_beta.csv')))
 
 
 first_closed_Sigma<- function(M,S){
@@ -159,11 +157,15 @@ VEM_PLNPCA <- R6Class("VEM_PLNPCA",
                      C = NULL,
                      Sigma = NULL, 
                      Theta = NULL,
-                     initialize = function(Y,O,covariates,q){
+                     good_init = NULL,
+                     fitted = NULL, 
+                     ELBO_list = NULL, 
+                     initialize = function(Y,O,covariates,q, good_init = TRUE){
                        self$Y <- Y
                        self$O <- O
                        self$covariates <- covariates
                        self$q = q
+                       self$good_init = good_init
                        self$p <- Y$shape[2]
                        self$n <- Y$shape[1]
                        self$d <- covariates$shape[2]
@@ -171,9 +173,19 @@ VEM_PLNPCA <- R6Class("VEM_PLNPCA",
                        self$M <- torch_zeros(self$n, self$q, requires_grad = TRUE)
                        self$S <- torch_ones(self$n, self$q, requires_grad = TRUE)
                        ## Model parameters 
-                       self$Theta <- torch_randn(self$d,self$p, requires_grad = TRUE)
-                       self$C = torch_randn(self$p, self$q, requires_grad = TRUE)
+                       print('Initialization ...')
+                       if (self$good_init){
+                          self$Theta <- Poisson_reg(Y,O,covariates)$detach()$clone()$requires_grad_(TRUE)
+                          self$C <- init_C(Y,O,covariates, self$Theta,q)$detach()$clone()$requires_grad_(TRUE)
+                       }
+                       else{
+                         self$Theta <- torch_zeros(self$d, self$p, requires_grad = TRUE)
+                         self$C <- torch_randn(self$p, self$q, requires_grad = TRUE)
+                       }
+                       print('Initialization finished.')
                        self$Sigma <- torch_eye(self$p)
+                       self$fitted = FALSE
+                       self$ELBO_list = c()
                      },
                      get_Sigma = function(){
                        return(torch_mm(self$C, self$C$t()))
@@ -189,92 +201,55 @@ VEM_PLNPCA <- R6Class("VEM_PLNPCA",
                          optimizer$step()
                          #self$Sigma <- first_closed_Sigma(self$M, self$S)
                          if(verbose){
+                           pr('i :', i )
                            pr('ELBO', -loss$item()/(self$n))
                            pr('MSE Sigma', MSE(self$get_Sigma() - true_Sigma))
                            pr('MSE Theta', MSE(self$Theta- true_Theta))
                          }
+                         self$ELBO_list = c(self$ELBO_list, -loss$item()/(self$n))
                        }
-                     }
+                      self$fitted <- TRUE 
+                     }, 
+                  plot_log_neg_ELBO = function(from = 10){
+                    plot(log(-self$ELBO_list[from:length(self$ELBO_list) ]))
+                    
+                  }
                    )
 )
 
-plnpca = VEM_PLNPCA$new(Y,O,covariates, q)
-plnpca$fit(500,0.1,verbose = TRUE)
-plnpca$Theta
-true_Theta
+#plnpca = VEM_PLNPCA$new(Y,O,covariates, q, good_init = FALSE)
+#plnpca$fit(30,0.1,verbose = TRUE)
+#plnpca$plot_log_neg_ELBO()
 
-d = 1L
-n = 2000L
-p = 2000L
-q = 10L
+# plnpca$Theta
+# true_Theta
+# covariates
+# 
+# d = 1L
+# n = 2000L
+# p = 2000L
+# q = 10L
 
 
 
 
 ### Sampling some data ###
-O <-  torch_tensor(matrix(0,nrow = n, ncol = p))
-covariates <- torch_tensor(matrix(rnorm(n*d),nrow = n, ncol = d))
-true_Theta <- torch_tensor(matrix(rnorm(d*p),nrow = d, ncol = p))
-true_C <- torch_tensor(matrix(rnorm(p*q), nrow = p, ncol = q) )/3
-true_Sigma <- torch_matmul(true_C,torch_transpose(true_C, 2,1))
-true_Theta <- torch_tensor(matrix(rnorm(d*p),nrow = d, ncol = p))/2
-true_C <- C_from_Sigma(true_Sigma,q)
-Y <- sample_PLN(true_C,true_Theta,O,covariates)
-vizmat(as.matrix(true_Sigma))
-nb_iter = 15
-var_percentage = torch_zeros(nb_iter)
-imps_percentage = torch_zeros(nb_iter)
+# O <-  torch_tensor(matrix(0,nrow = n, ncol = p))
+# covariates <- torch_tensor(matrix(rnorm(n*d),nrow = n, ncol = d))
+# true_Theta <- torch_tensor(matrix(rnorm(d*p),nrow = d, ncol = p))
+# true_C <- torch_tensor(matrix(rnorm(p*q), nrow = p, ncol = q) )/3
+# true_Sigma <- torch_matmul(true_C,torch_transpose(true_C, 2,1))
+# true_Theta <- torch_tensor(matrix(rnorm(d*p),nrow = d, ncol = p))/2
+# true_C <- C_from_Sigma(true_Sigma,q)
+# Y <- sample_PLN(true_C,true_Theta,O,covariates)
+# n_a = 200
+# n_b = 300
+# vizmat(as.matrix(true_Sigma[n_a:n_b, n_a:n_b]))
 
-for ( i in 1:nb_iter){
-  Y <- sample_PLN(true_C,true_Theta,O,covariates)
-  pln = VEM_PLN$new(Y,O,covariates)
-  pln$fit(2,0.1, verbose = TRUE)
-  inv_Fischer = pln$get_variational_inv_Fisher()
-  res_var = how_much(pln$Theta, true_Theta, inv_Fischer, p*d-5L,Y$shape[1])
-  var_percentage[i] = res_var 
-  pr('res_var', res_var)
-  imps <- IMPS_PLN$new(Y,O,covariates,q)
-  imps$C <- torch_clone(true_C) #torch_clone(true_C) + 0*torch_randn(true_C$shape)
-  imps$Theta <- pln$Theta#true_Theta + 0.4*torch_randn(true_Theta$shape)
-  imps$fit(1L, acc = 0.008, lr = 0)
-  hess_log_p_theta <- imps$compute_hess_log_p_theta()
-  res_imps = how_much(imps$Theta, true_Theta, -hess_log_p_theta, p*d - 5L, Y$shape[1]) 
-  pr('res_imps', res_imps)
-  imps_percentage[i] = res_imps
-}
+ELBO_list  = list()
+ELBO_list = c(ELBO_list, 1)
+ELBO_list = c(ELBO_list, 1)
+ELBO_list = c(ELBO_list, 1)
+ELBO_list
 
-pr('mean var', mean_var)
-pr('mean imps', mean_imps/nb_iter)
-
-pln = VEM_PLN$new(Y,O,covariates)
-pln$fit(900,0.1)
-inv_Fischer = pln$get_variational_inv_Fisher()
-how_much(pln$Theta, true_Theta, inv_Fischer, p*d-5L,Y$shape[1])
-
-
-
-imps <- IMPS_PLN$new(Y,O,covariates,q)
-imps$C <- torch_clone(true_C) #torch_clone(true_C) + 0*torch_randn(true_C$shape)
-imps$Theta <- pln$Theta#true_Theta + 0.4*torch_randn(true_Theta$shape)
-imps$fit(1L, acc = 0.008, lr = 0)
-
-hess_log_p_theta <- imps$compute_hess_log_p_theta()
-how_much(imps$Theta, true_Theta, -hess_log_p_theta, p*d - 5L, Y$shape[1] )
-
-
-
-
-
-torch_cholesky(inv_Fischer)
-pln$get_Cn_Theta()
-
-
-#verif si on a bien la meme chose avec les deux formules (vectorisées ou non) de Kronecker
-pln$A
-torch_diag(2/(2+self$S[i,]^2*self$A[i,]))
-pln$get_Dn_Theta()
-#pr('MSE', MSE(pln$Sigma - true_Sigma))
-x = torch_randn(100,10,10)
-y = torch_randn(1,10,10)
-torch_kron(x,y)
 
