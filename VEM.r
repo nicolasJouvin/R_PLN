@@ -1,6 +1,6 @@
 library(torch)
 library(R6)
-#setwd("~/Documents/These/R_PLN")
+setwd("~/Documents/R_PLN")
 source(file = 'utils.r')
 
 # 
@@ -48,6 +48,7 @@ VEM_PLN <- R6Class("VEM_PLN",
                      A = NULL, 
                      Sigma = NULL, 
                      Theta = NULL,
+                     ELBO_list = NULL, 
                      initialize = function(Y,O,covariates){
                        self$Y <- Y
                        self$O <- O
@@ -61,6 +62,7 @@ VEM_PLN <- R6Class("VEM_PLN",
                        ## Model parameters 
                        self$Theta <- torch_zeros(self$d,self$p, requires_grad = TRUE)
                        self$Sigma <- torch_eye(self$p)
+                       self$ELBO_list = c()
                      },
                      
                      fit = function(N_iter, lr, verbose = FALSE){
@@ -72,13 +74,18 @@ VEM_PLN <- R6Class("VEM_PLN",
                          loss$backward()
                          optimizer$step()
                          self$Sigma <- first_closed_Sigma(self$M, self$S)
-                         if(verbose){
+                         if(verbose && (i %% 50 == 0)){
+                           pr('i : ', i )
                            pr('ELBO', -loss$item()/(self$n))
-                           pr('MSE Sigma', MSE(self$Sigma - true_Sigma))
-                           pr('MSE Theta', MSE(self$Theta- true_Theta))
+                           #pr('MSE Sigma', MSE(self$Sigma - true_Sigma))
+                           #pr('MSE Theta', MSE(self$Theta- true_Theta))
                          }
+                         self$ELBO_list = c(self$ELBO_list, -loss$item()/(self$n))
                          
                        }
+                     }, 
+                     plot_log_neg_ELBO = function(from = 10){
+                       plot(log(-self$ELBO_list[from:length(self$ELBO_list) ]))
                      }, 
                      
                      get_Dn_Theta = function(){
@@ -200,11 +207,12 @@ VEM_PLNPCA <- R6Class("VEM_PLNPCA",
                          #pr('grad C', self$C$grad)
                          optimizer$step()
                          #self$Sigma <- first_closed_Sigma(self$M, self$S)
-                         if(verbose){
+                         if(verbose && (i%%50 == 0)){
                            pr('i :', i )
+                           pr('norm sig', torch_norm(self$get_Sigma()))
                            pr('ELBO', -loss$item()/(self$n))
-                           pr('MSE Sigma', MSE(self$get_Sigma() - true_Sigma))
-                           pr('MSE Theta', MSE(self$Theta- true_Theta))
+                           #pr('MSE Sigma', MSE(self$get_Sigma() - true_Sigma))
+                           #pr('MSE Theta', MSE(self$Theta- true_Theta))
                          }
                          self$ELBO_list = c(self$ELBO_list, -loss$item()/(self$n))
                        }
@@ -212,7 +220,6 @@ VEM_PLNPCA <- R6Class("VEM_PLNPCA",
                      }, 
                   plot_log_neg_ELBO = function(from = 10){
                     plot(log(-self$ELBO_list[from:length(self$ELBO_list) ]))
-                    
                   }
                    )
 )
