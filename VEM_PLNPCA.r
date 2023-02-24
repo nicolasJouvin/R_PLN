@@ -1,14 +1,14 @@
 library(torch)
 library(R6)
-source(file = '../R_PLN/utils.r')
-# 
-# 
-# Y <- torch_tensor(as.matrix(read.csv('Y.csv')))
-# O <- torch_tensor(as.matrix(read.csv('O.csv')))
-# covariates <- torch_tensor(as.matrix(read.csv('covariates.csv')))
-# true_Sigma <- torch_tensor(as.matrix(read.csv('true_5_Sigma.csv')))
-# #true_C <- torch_cholesky(true_Sigma)
-# true_Theta <- torch_tensor(as.matrix(read.csv('true_beta.csv')))
+setwd("These/R_PLN")
+source(file = 'utils.r')
+
+Y <- torch_tensor(as.matrix(read.csv('Y.csv')))
+O <- torch_tensor(as.matrix(read.csv('O.csv')))
+covariates <- torch_tensor(as.matrix(read.csv('covariates.csv')))
+true_Sigma <- torch_tensor(as.matrix(read.csv('true_5_Sigma.csv')))
+#true_C <- torch_cholesky(true_Sigma)
+true_Theta <- torch_tensor(as.matrix(read.csv('true_beta.csv')))
 
 
 
@@ -57,7 +57,7 @@ VEM_PLNPCA <- R6Class("VEM_PLNPCA",
                        self$n <- Y$shape[1]
                        self$d <- covariates$shape[2]
                        ## Variational parameters
-                       self$M <- torch_zeros(self$n, self$q, requires_grad = TRUE)
+                       self$M <- torch_ones(self$n, self$q, requires_grad = TRUE)
                        self$S <- torch_ones(self$n, self$q, requires_grad = TRUE)
                        ## Model parameters 
                        message('Initialization ...')
@@ -110,11 +110,12 @@ VEM_PLNPCA <- R6Class("VEM_PLNPCA",
                        }
                    )
 )
-
-plnpca = VEM_PLNPCA$new(Y,O,covariates, q, good_init = FALSE)
-plnpca$fit(30,0.1,verbose = TRUE)
+q = 5
+plnpca = VEM_PLNPCA$new(Y,O,covariates, q, good_init = TRUE)
+plnpca$fit(600,0.1,verbose = TRUE)
 plnpca$plot_log_neg_ELBO()
 
+#vizmat(as.matrix(plnpca$get_Sigma()))
 # plnpca$Theta
 # true_Theta
 # covariates
@@ -138,7 +139,6 @@ plnpca$plot_log_neg_ELBO()
 # Y <- sample_PLN(true_C,true_Theta,O,covariates)
 # n_a = 200
 # n_b = 300
-# vizmat(as.matrix(true_Sigma[n_a:n_b, n_a:n_b]))
 
 
 
