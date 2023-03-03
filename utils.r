@@ -17,6 +17,13 @@ pr <- function(str, var){
   print(var)
 }
 
+as_indicator <- function(clustering) {
+  K <- length(unique(clustering))
+  N  <- length(clustering)
+  Z <- matrix(0, N, K)
+  Z[cbind(seq.int(N), clustering)] <- 1
+  Z
+}
 
 sample_PLN <- function(C,Theta,O,covariates, B_zero = None, ZI = FALSE){
   #Sample Poisson log Normal variables. If ZI is True, then the model will
@@ -55,6 +62,62 @@ sample_PLN <- function(C,Theta,O,covariates, B_zero = None, ZI = FALSE){
   Y = torch_tensor((1-ksi)*matrix(rpois(n = n*p, lambda = as.matrix(parameter)), nrow = n, ncol = p))
   return(Y)
 }
+
+simu_plnmpca = function(n, params, O = NULL, covariates=NULL) {
+  #Sample from mixture of PLNPCA with common loadings
+  # The number p of variables
+  #considered is the second size of O. The number d of covariates considered
+  #is the first size of beta.
+  
+  #Args:
+  #  n: Number of data points (must match first dim of O)
+  #  params: a list with 
+  #     $C: torch.tensor of size (p,q). The loadings matrix.
+  #     $Theta: torch.tensor of size (d,p). Regression parameters.
+  #     $Mu : torch.tensor of size (K,q). Latent GMM means.
+  #     $Lambda : torch.tensor of size (K,q,q). Latent GMM covariance matrices.
+  # covariates : torch.tensor. Covariates, size (n,d)
+  
+  #  O: torch.tensor. Offset, size (n,p)
+  #  Returns :
+  #      Y: torch.tensor of size (n,p), the count variables.
+  #      Z: torch.tensor of size (n,p), the gaussian parameters.
+  #      W: torch.tensor of size (n,q), the gaussian latent variable in dim q
+  #      clusters: R vector of length n, the cluster memberships.
+  
+  if(is.null(O)) O <- torch_zeros(c(n, p))
+  K = length(params$Pi)
+  p = dim(params$C)[1]
+  q = dim(params$C)[2]
+  clusters = max.col(t(rmultinom(n, 1, prob = as.numeric(params$Pi))))
+  nks = table(clusters)
+  W = matrix(NA, n, q)
+  Z = torch_empty(c(n, p))
+  Y = torch_empty(c(n, p))
+  
+  for(k in 1:K) {
+    W[clusters==k,] = MASS::mvrnorm(n=nks[k],
+                                    mu = as.numeric(params$Mu[k,]),
+                                    Sigma = as.matrix(params$Sigmas[k,,])
+    ) 
+  }
+  W = torch_tensor(W)
+  covtheta = if(is.null(covariates)) torch_zeros(c(n, p)) else covariates$mm(params$Theta)
+  for(i in 1:n) {
+    Z[i,] = params$C$matmul(W[i,]) + covtheta[i,] + O[i]
+    Y[i,] = torch_tensor(rpois(p, exp(as.numeric(Z[i,]))))
+  }
+  
+  return(list(clusters=clusters, 
+              W=W, 
+              Z=Z, 
+              Y=Y,
+              O=O)
+  )
+}
+
+
+
 
 MSE <- function(t){
   return(mean(t**2))
