@@ -1,6 +1,5 @@
 library(torch)
 library(R6)
-setwd("These/R_PLN")
 source(file = 'utils.r')
 
 Y <- torch_tensor(as.matrix(read.csv('Y.csv')))
@@ -110,35 +109,36 @@ VEM_PLNPCA <- R6Class("VEM_PLNPCA",
                        }
                    )
 )
-q = 5
+q = 2
 plnpca = VEM_PLNPCA$new(Y,O,covariates, q, good_init = TRUE)
 plnpca$fit(600,0.1,verbose = TRUE)
 plnpca$plot_log_neg_ELBO()
 
-#vizmat(as.matrix(plnpca$get_Sigma()))
+library(ggplot2)
+vizmat(as.matrix(plnpca$get_Sigma()))
 # plnpca$Theta
 # true_Theta
 # covariates
 # 
-# d = 1L
-# n = 2000L
-# p = 2000L
-# q = 10L
+d = 1L
+n = 2000L
+p = 2000L
+q = 10L
 
 
 
 
 ### Sampling some data ###
-# O <-  torch_tensor(matrix(0,nrow = n, ncol = p))
-# covariates <- torch_tensor(matrix(rnorm(n*d),nrow = n, ncol = d))
-# true_Theta <- torch_tensor(matrix(rnorm(d*p),nrow = d, ncol = p))
-# true_C <- torch_tensor(matrix(rnorm(p*q), nrow = p, ncol = q) )/3
-# true_Sigma <- torch_matmul(true_C,torch_transpose(true_C, 2,1))
-# true_Theta <- torch_tensor(matrix(rnorm(d*p),nrow = d, ncol = p))/2
-# true_C <- C_from_Sigma(true_Sigma,q)
-# Y <- sample_PLN(true_C,true_Theta,O,covariates)
-# n_a = 200
-# n_b = 300
+O <-  torch_tensor(matrix(0,nrow = n, ncol = p))
+covariates <- torch_tensor(matrix(rnorm(n*d),nrow = n, ncol = d))
+true_Theta <- torch_tensor(matrix(rnorm(d*p),nrow = d, ncol = p))
+true_C <- torch_tensor(matrix(rnorm(p*q), nrow = p, ncol = q) )/3
+true_Sigma <- torch_matmul(true_C,torch_transpose(true_C, 2,1))
+true_Theta <- torch_tensor(matrix(rnorm(d*p),nrow = d, ncol = p))/2
+true_C <- C_from_Sigma(true_Sigma,q)
+Y <- sample_PLN(true_C,true_Theta,O,covariates)
+n_a = 200
+n_b = 300
 
 
 
