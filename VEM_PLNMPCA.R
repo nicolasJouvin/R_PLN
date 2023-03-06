@@ -1,5 +1,6 @@
 library(torch)
 library(R6)
+library(aricode)
 source(file = 'utils.r')
 
 .clip_proba = function(x, zero = .Machine$double.eps) {
@@ -9,7 +10,88 @@ source(file = 'utils.r')
   x
 }
 
-ELBO_MPCA <- function(Y, O, covariates, M, S, Tau, C, Theta, Lambda, Mu, Pi){
+log1pexp = function(x) {
+  return(torch_log1p(torch_exp(-torch_abs(x))) + torch_relu(x))
+}
+
+logexpm1= function(x) {
+  return(x + torch_log(-torch_expm1(-x)))
+}
+
+
+reals_to_spd_matrix <- function(x, scale=torch_tensor(1.0)) {
+  #' Parameterization of a positive definite matrix by a vector
+  #' Hijacked from Jean-Benoist Léger's parameterization cookbook 
+  #' and Python code : https://gitlab.com/jbleger/parametrization-cookbook/-/blob/main/parametrization_cookbook/functions/torch.py#L335
+  #' Convention is 
+  #'  * diagonal values are in x[:n] 
+  #'  * lower triangular values are un x[n:]
+  device = x$device
+  n = as.integer((8 * x$shape + 1) ^ 0.5 / 2)
+  stopifnot(
+    "x must be a 1-D tensor" = length(x$shape) == 1
+  )
+  stopifnot(
+    "Incorect size. It does not exist n such as n*(n+1)/2=={x.shape[-1]}" = x$shape == as.integer(n * (n + 1) / 2)
+  ) 
+  
+  stopifnot(
+    "Non broacastable shapes, got matrix shape {x$shape} and scale shape {scale$shape}" = 
+      is.numeric(scale) | (length(scale$shape) == 1 & (scale$shape[0] == n | scale$shape[0] == 1))
+    )
+
+  y = torch_zeros(c(n, n), device=device, dtype=x$dtype)
+  diag_idx = matrix(as.logical(diag(n)), n,n)
+  y[diag_idx] = log1pexp(x[1:n])
+  
+  lower_tri_idxs = lower.tri(y, diag = FALSE)
+  y[lower_tri_idxs] = x[(n+1):N]
+  y = y$divide(torch_sqrt(torch_arange(1, n, device=device))[,NULL])
+  z_rescaled = y$matmul(y$t())
+  
+  if (length(scale$shape) == 1) {
+    sqrt_scale = torch_sqrt(scale)
+    z = z_rescaled$mul(sqrt_scale[, NULL])$mul(sqrt_scale[, NULL])
+  } else if(is.numeric(scale)) {
+    z = z_rescaled * scale
+  }
+  return(z)
+}
+
+sdp_matrix_to_reals = function(z, scale=torch_tensor(1.0)) {
+  device = z$device
+  stopifnot(
+    "input z must be a square 2-D tensor (a matrix)" = length(z$shape) == 2 | z$shape[-2] != z$shape[-1]
+  )
+  stopifnot(
+    "Non broacastable shapes, got matrix shape {x$shape} and scale shape {scale$shape}" = 
+      is.numeric(scale) | (length(scale$shape) == 1 & (scale$shape[0] == n | scale$shape[0] == 1))
+  )
+  n = z$shape[-1]
+  
+  if (length(scale$shape) == 1) {
+    sqrt_scale = torch_sqrt(scale)
+    z_rescaled = z$div(sqrt_scale[,NULL])$div(sqrt_scale[NULL,])
+  } else if(is.numeric(scale)) {
+    z_rescaled = z / scale
+  }
+  
+  y = linalg_cholesky(z_rescaled)
+  y = y$mul(torch_sqrt(torch_arange(1, n, device=device))[,NULL])
+  diag_values = y$diag()
+  tril_values = y[lower.tri(y, diag = FALSE)]
+  return(torch_cat(c(logexpm1(diag_values), tril_values)))
+}
+
+n=5
+x = torch_arange(1, n*(n+1) / 2)
+scale = torch_tensor(1e0)
+print(x$shape)
+z = reals_to_spd_matrix(x, scale = scale)
+x_bis = sdp_matrix_to_reals(z, scale = scale)
+torch_allclose(x, x_bis)
+
+ELBO_MPCA <- function(Y, O, covariates, M, S, Tau, C, Theta, Lambda_vec, Mu, Pi){
   ## compute the ELBO with a PLN mixture of Commmon PCA parametrization
   # i.e. loadings are shared accross clusters and the scores follow a GMM
   # C_k = C \forall k
@@ -17,6 +99,9 @@ ELBO_MPCA <- function(Y, O, covariates, M, S, Tau, C, Theta, Lambda, Mu, Pi){
   n = Y$shape[1]
   q = C$shape[2]
   K = Tau$shape[1]
+  
+  # Transform Lambda_vec to sdp matrices with inversible transform
+  Lambda = lapply(1:K, \(k) reals_to_spd_matrix(Lambda_vec[k,]$squeeze())[NULL,,]) %>% torch_cat
   
   # log p(Y | W) (obs. Poisson part)
   A = O + torch_mm(covariates, Theta) + torch_mm(M, C$t())
@@ -61,6 +146,8 @@ ELBO_MPCA <- function(Y, O, covariates, M, S, Tau, C, Theta, Lambda, Mu, Pi){
 }
 
 
+# M-step updates ----------------------------------------------------------
+
 compute_Pi <- function(Tau) {
   Tau$sum(2) / Tau$shape[2]
 }
@@ -94,6 +181,27 @@ compute_Lambda <- function(Tau, M, S, Mu) {
       (SSk + MMtk)[NULL,,] / nks[k]
     }) %>% 
     torch_cat()
+}
+
+# VE-step updates ---------------------------------------------------------
+
+compute_var_Tau <- function(Y, M, S, C, Lambda, Mu, Pi) {
+  # shape (K, n, q)
+  centeredM = (M[NULL,,] - Mu[,NULL,])
+  # broadcasted vesion of [(m_i - \mu_k)^T \Lambda_k^{-1} (m_i - \mu_k))] over {k,i}
+  centeredMLambdaCenteredMt = centeredM[,,NULL,]$matmul(Lambda[,NULL,,]$inverse()$matmul(centeredM[,,,NULL]))$squeeze()
+  # broadcasted version of Tr[Lambda_k^{-1} \diag(s_i^2)] over {k, i}
+  TrLambdaS = Lambda$diagonal(dim1 = -1, dim2 = -2)[,NULL,]$multiply(S[NULL,])$sum(-1)
+  logTau = Pi[,NULL]$log() - .5 * (Lambda$logdet()[,NULL] + centeredMLambdaCenteredMt + TrLambdaS)
+  torch_exp(logTau - logTau$logsumexp(dim = 1))
+}
+
+compute_var_mean <- function(Y, Tau, C) {
+  # no closed form
+}
+
+compute_var_S <- function(Y, Tau, M) {
+  # no closed form
 }
 
 PROFILED_ELBO_MPCA <- function(Y, O, covariates, M, S, Tau, C, Theta) {
@@ -137,6 +245,7 @@ VEM_PLNMPCA <- R6Class("VEM_PLNPCA",
                         Pi = NULL,
                         Mu = NULL,
                         Lambda = NULL,
+                        Lambda_vec = NULL, # parametrizatin of Lambda as a vec
                         control_init = NULL,
                         fitted = NULL, 
                         ELBO_list = NULL,
@@ -157,11 +266,11 @@ VEM_PLNMPCA <- R6Class("VEM_PLNPCA",
                           message('Loadings and Theta initialization ...')
                           if (self$control_init$init_C == "PCA"){
                             self$Theta <- Poisson_reg(Y,O,covariates)$detach()$clone()$requires_grad_(TRUE)
-                            self$C <- init_C(Y,O,covariates, self$Theta,q)$detach()$clone()$requires_grad_(TRUE)
+                            self$C <- init_C(Y,O,covariates, self$Theta,q)$detach()$clone()$requires_grad_(FALSE)
                           }
                           else{
                             self$Theta <- torch_zeros(self$d, self$p, requires_grad = TRUE)
-                            self$C <- torch_randn(self$p, self$q, requires_grad = TRUE)
+                            self$C <- torch_randn(self$p, self$q, requires_grad = FALSE)
                           }
                           message('Cluster initialization ...')
                           cl = switch(self$control_init$init_cl,
@@ -174,22 +283,41 @@ VEM_PLNMPCA <- R6Class("VEM_PLNPCA",
                           
                           # Variational parameters q(Z)
                           self$Tau = torch_tensor(as_indicator(cl) %>% t()) # %>% .clip_proba
-                          self$Tau$requires_grad = TRUE
                           
                           # Mean \mu_k in latent space
-                          log_mean_per_cluster = self$Tau[,,NULL]$multiply(self$Y$log()[NULL,,])$mean(1)
+                          PSEUDO_COUNT = 1e-6
+                          log_mean_per_cluster = (self$Tau[,,NULL]$multiply(self$Y[NULL,,]) + PSEUDO_COUNT)$mean(2)$log()
                           self$Mu = log_mean_per_cluster$matmul(self$C)
-                          self$Mu$requires_grad = TRUE
+                
                           # self$Mu = sapply(Y %>% as.data.frame() %>% split(cl), colMeans) %>% t() %>% torch_tensor()
                           # self$Mu = torch_tensor(logmean_per_cluster %*% self$C, requires_grad = TRUE)
 
                           # Covar \Lambda_k in latent space
-                          self$Lambda = projY %>% as.data.frame() %>% 
-                            split(cl) %>% 
-                            map(cov) %>% 
-                            simplify2array() %>% 
-                            aperm(c(3, 1, 2)) %>% # reshape to (K,q,q)
-                            torch_tensor(requires_grad=TRUE) 
+                          self$Lambda = lapply(
+                            1:self$K,
+                            function(k) {
+                              # torch.cov() takes (p,n) tensor as input : t(design)
+                              cov_obs_k = (self$Y + PSEUDO_COUNT)$log()$t()$cov(
+                                # correction = 0, 
+                                aweights = self$Tau[k,]
+                                )
+                              # return tensor shaped (1,q,q) for torch_cat()
+                              self$C$t()$matmul(cov_obs_k)$matmul(self$C)[NULL,,]
+                            }
+                            ) %>%
+                            torch_cat()
+                          
+                          self$Lambda_vec = lapply(
+                            1:self$K,
+                            \(k) sdp_matrix_to_reals(self$Lambda[k,,]$squeeze())[NULL,]
+                            ) %>%
+                            torch_cat()
+                          # set grad = TRUE
+                          self$C$requires_grad = TRUE
+                          self$Tau$requires_grad = TRUE
+                          self$Mu$requires_grad = TRUE
+                          # self$Lambda$requires_grad = TRUE
+                          self$Lambda_vec$requires_grad = TRUE
                           
                           ## Variational parameters
                           self$M <- torch_zeros(self$n, self$q, requires_grad = TRUE)
@@ -200,13 +328,13 @@ VEM_PLNMPCA <- R6Class("VEM_PLNPCA",
                           self$ELBO_list = c()
                         },
                         fit = function(N_iter, lr, verbose = FALSE){
-                          optimizer = optim_rprop(c(self$Theta, self$C, self$M, self$S, self$Tau, self$Mu, self$Lambda, self$Pi), lr = lr)
+                          optimizer = optim_rprop(c(self$Theta, self$C, self$M, self$S, self$Tau, self$Mu, self$Lambda), lr = lr) #, self$Pi
                           for (i in 1:N_iter){
                             optimizer$zero_grad()
                             if(self$profiled) {
                               loss = - PROFILED_ELBO_MPCA(self$Y, self$O, self$covariates, self$M, self$S, self$Tau, self$C, self$Theta)
                             } else {
-                              loss = - ELBO_MPCA(self$Y, self$O, self$covariates, self$M, self$S, self$Tau, self$C, self$Theta, self$Lambda, self$Mu, self$Pi)
+                              loss = - ELBO_MPCA(self$Y, self$O, self$covariates, self$M, self$S, self$Tau, self$C, self$Theta, self$Lambda_vec, self$Mu, self$Pi)
                             }
                             loss$backward()
                             optimizer$step()
@@ -276,7 +404,7 @@ VEM_PLNMPCA <- R6Class("VEM_PLNPCA",
 
 # Fix seed ----------------------------------------------------------------
 seed = as.integer(as.POSIXct(Sys.time()))
-seed
+seed = 1677852062
 set.seed(seed)
 torch::torch_manual_seed(seed)
 
@@ -284,7 +412,7 @@ torch::torch_manual_seed(seed)
 n = 100
 q = 3
 p = 5
-K = 3
+K = 2
 params = list()
 params$Pi = torch_tensor(rep(1/K, K))
 params$C = torch_tensor(qr.Q(qr(matrix(rnorm(p*q), p, q))))
@@ -305,7 +433,7 @@ if (use_covariates) {
 }
 
 
-n_iter = 100
+n_iter = 1000
 profiled_elbo = FALSE
 
 control_mompca = plnmpca_control_init()
@@ -314,7 +442,7 @@ simu = simu_plnmpca(n, params, covariates)
 km = kmeans(scale(simu$Y), centers=K, nstart=10)
 cat('\n ARI kmeans : ', ARI(simu$clusters, km$cl))
 plnpca = VEM_PLNMPCA$new(simu$Y, simu$O, covariates, q, K, profiled = profiled_elbo)
-plnpca$fit(n_iter,0.01,verbose = FALSE)
+plnpca$fit(n_iter,0.1,verbose = TRUE)
 plnpca$plot_log_neg_ELBO()
 
 
