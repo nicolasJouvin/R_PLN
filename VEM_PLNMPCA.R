@@ -25,7 +25,7 @@ reals_to_spd_matrix <- function(x, scale=torch_tensor(1.0)) {
   #' and Python code : https://gitlab.com/jbleger/parametrization-cookbook/-/blob/main/parametrization_cookbook/functions/torch.py#L335
   #' Convention is 
   #'  * diagonal values are in x[:n] 
-  #'  * lower triangular values are un x[n:]
+  #'  * lower triangular values are in x[n:]
   device = x$device
   n = as.integer((8 * x$shape + 1) ^ 0.5 / 2)
   stopifnot(
@@ -91,7 +91,7 @@ z = reals_to_spd_matrix(x, scale = scale)
 x_bis = sdp_matrix_to_reals(z, scale = scale)
 torch_allclose(x, x_bis)
 
-ELBO_MPCA <- function(Y, O, covariates, M, S, Tau, C, Theta, Lambda_vec, Mu, Pi){
+ELBO_MPCA <- function(Y, O, covariates, M, S, Tau, C, Theta, Lambda, Mu, Pi){
   ## compute the ELBO with a PLN mixture of Commmon PCA parametrization
   # i.e. loadings are shared accross clusters and the scores follow a GMM
   # C_k = C \forall k
@@ -101,8 +101,8 @@ ELBO_MPCA <- function(Y, O, covariates, M, S, Tau, C, Theta, Lambda_vec, Mu, Pi)
   K = Tau$shape[1]
   
   # Transform Lambda_vec to sdp matrices with inversible transform
-  Lambda = lapply(1:K, \(k) reals_to_spd_matrix(Lambda_vec[k,]$squeeze())[NULL,,]) %>% torch_cat
-  
+  # Lambda = lapply(1:K, \(k) reals_to_spd_matrix(Lambda_vec[k,]$squeeze())[NULL,,]) %>% torch_cat
+
   # log p(Y | W) (obs. Poisson part)
   A = O + torch_mm(covariates, Theta) + torch_mm(M, C$t())
   SrondS = torch_multiply(S, S)
@@ -307,17 +307,18 @@ VEM_PLNMPCA <- R6Class("VEM_PLNPCA",
                             ) %>%
                             torch_cat()
                           
-                          self$Lambda_vec = lapply(
-                            1:self$K,
-                            \(k) sdp_matrix_to_reals(self$Lambda[k,,]$squeeze())[NULL,]
-                            ) %>%
-                            torch_cat()
+                          # self$Lambda_vec = lapply(
+                          #   1:self$K,
+                          #   \(k) sdp_matrix_to_reals(self$Lambda[k,,]$squeeze())[NULL,]
+                          #   ) %>%
+                          #   torch_cat()
+                          
                           # set grad = TRUE
                           self$C$requires_grad = TRUE
                           self$Tau$requires_grad = TRUE
                           self$Mu$requires_grad = TRUE
-                          # self$Lambda$requires_grad = TRUE
-                          self$Lambda_vec$requires_grad = TRUE
+                          self$Lambda$requires_grad = TRUE
+                          # self$Lambda_vec$requires_grad = TRUE
                           
                           ## Variational parameters
                           self$M <- torch_zeros(self$n, self$q, requires_grad = TRUE)
@@ -334,16 +335,28 @@ VEM_PLNMPCA <- R6Class("VEM_PLNPCA",
                             if(self$profiled) {
                               loss = - PROFILED_ELBO_MPCA(self$Y, self$O, self$covariates, self$M, self$S, self$Tau, self$C, self$Theta)
                             } else {
-                              loss = - ELBO_MPCA(self$Y, self$O, self$covariates, self$M, self$S, self$Tau, self$C, self$Theta, self$Lambda_vec, self$Mu, self$Pi)
+                              loss = - ELBO_MPCA(self$Y, self$O, self$covariates, self$M, self$S, self$Tau, self$C, self$Theta, self$Lambda, self$Mu, self$Pi)
                             }
+                            ### debugging
+                            # old_lambda_vec= self$Lambda_vec$clone()
+                            old_lambda = self$Lambda$clone()
+                            old_tau = self$Tau$clone()
+                            old_M = self$M$clone()
+                            torch_equal(self$Lambda, old_lambda)
                             loss$backward()
                             optimizer$step()
+                            torch_equal(self$Lambda, old_lambda)
+                            torch_equal(self$Tau, old_tau)
+                            
                             # normalize Tau without keeping grad
                             with_no_grad({
                               self$Tau <- self$Tau$divide(self$Tau$sum(1, keepdim = TRUE)) %>%
                                 .clip_proba()
                               # project onto stiefel with svd ? self$C 
                             })
+                            # weird : here torch set self$Tau$requires_grad to F...
+                            # so I reset it by hand
+                            self$Tau$requires_grad = TRUE
                             if(!self$profiled) {
                               self$Pi <- self$Tau$sum(2) / self$n
                             } 
@@ -353,6 +366,8 @@ VEM_PLNMPCA <- R6Class("VEM_PLNPCA",
                               message('ELBO : ', as.character(-loss$item()/(self$n)))
                               pr('MSE C', MSE(self$C - params$C))
                               pr('MSE Theta', MSE(self$Theta- params$Theta))
+                              pr('Change in Lambda_vec', as.numeric((self$Lambda_vec - old_lambda_vec)$sum()))
+                              
                             }
                             self$ELBO_list = c(self$ELBO_list, -loss$item()/(self$n))
                           }
