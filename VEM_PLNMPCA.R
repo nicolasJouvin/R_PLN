@@ -91,7 +91,7 @@ z = reals_to_spd_matrix(x, scale = scale)
 x_bis = sdp_matrix_to_reals(z, scale = scale)
 torch_allclose(x, x_bis)
 
-ELBO_MPCA <- function(Y, O, covariates, M, S, Tau, C, Theta, Lambda, Mu, Pi){
+ELBO_MPCA <- function(Y, O, covariates, M, S, Tau, C, Theta, Lambda_vec, Mu, Pi){
   ## compute the ELBO with a PLN mixture of Commmon PCA parametrization
   # i.e. loadings are shared accross clusters and the scores follow a GMM
   # C_k = C \forall k
@@ -101,7 +101,7 @@ ELBO_MPCA <- function(Y, O, covariates, M, S, Tau, C, Theta, Lambda, Mu, Pi){
   K = Tau$shape[1]
   
   # Transform Lambda_vec to sdp matrices with inversible transform
-  # Lambda = lapply(1:K, \(k) reals_to_spd_matrix(Lambda_vec[k,]$squeeze())[NULL,,]) %>% torch_cat
+  Lambda = lapply(1:K, \(k) reals_to_spd_matrix(Lambda_vec[k,]$squeeze())[NULL,,]) %>% torch_cat
 
   # log p(Y | W) (obs. Poisson part)
   A = O + torch_mm(covariates, Theta) + torch_mm(M, C$t())
@@ -307,18 +307,18 @@ VEM_PLNMPCA <- R6Class("VEM_PLNPCA",
                             ) %>%
                             torch_cat()
                           
-                          # self$Lambda_vec = lapply(
-                          #   1:self$K,
-                          #   \(k) sdp_matrix_to_reals(self$Lambda[k,,]$squeeze())[NULL,]
-                          #   ) %>%
-                          #   torch_cat()
+                          self$Lambda_vec = lapply(
+                            1:self$K,
+                            \(k) sdp_matrix_to_reals(self$Lambda[k,,]$squeeze())[NULL,]
+                            ) %>%
+                            torch_cat()
                           
                           # set grad = TRUE
                           self$C$requires_grad = TRUE
                           self$Tau$requires_grad = TRUE
                           self$Mu$requires_grad = TRUE
-                          self$Lambda$requires_grad = TRUE
-                          # self$Lambda_vec$requires_grad = TRUE
+                          # self$Lambda$requires_grad = TRUE
+                          self$Lambda_vec$requires_grad = TRUE
                           
                           ## Variational parameters
                           self$M <- torch_zeros(self$n, self$q, requires_grad = TRUE)
@@ -329,23 +329,23 @@ VEM_PLNMPCA <- R6Class("VEM_PLNPCA",
                           self$ELBO_list = c()
                         },
                         fit = function(N_iter, lr, verbose = FALSE){
-                          optimizer = optim_rprop(c(self$Theta, self$C, self$M, self$S, self$Tau, self$Mu, self$Lambda), lr = lr) #, self$Pi
+                          optimizer = optim_rprop(c(self$Theta, self$C, self$M, self$S, self$Tau, self$Mu, self$Lambda_vec), lr = lr) #, self$Pi
                           for (i in 1:N_iter){
                             optimizer$zero_grad()
                             if(self$profiled) {
                               loss = - PROFILED_ELBO_MPCA(self$Y, self$O, self$covariates, self$M, self$S, self$Tau, self$C, self$Theta)
                             } else {
-                              loss = - ELBO_MPCA(self$Y, self$O, self$covariates, self$M, self$S, self$Tau, self$C, self$Theta, self$Lambda, self$Mu, self$Pi)
+                              loss = - ELBO_MPCA(self$Y, self$O, self$covariates, self$M, self$S, self$Tau, self$C, self$Theta, self$Lambda_vec, self$Mu, self$Pi)
                             }
                             ### debugging
-                            # old_lambda_vec= self$Lambda_vec$clone()
+                            old_lambda_vec= self$Lambda_vec$clone()
                             old_lambda = self$Lambda$clone()
                             old_tau = self$Tau$clone()
                             old_M = self$M$clone()
-                            torch_equal(self$Lambda, old_lambda)
+                            torch_equal(self$Lambda_vec, old_lambda_vec)
                             loss$backward()
                             optimizer$step()
-                            torch_equal(self$Lambda, old_lambda)
+                            torch_equal(self$Lambda_vec, old_lambda_vec)
                             torch_equal(self$Tau, old_tau)
                             
                             # normalize Tau without keeping grad
