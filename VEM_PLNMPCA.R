@@ -19,6 +19,9 @@ logexpm1= function(x) {
 }
 
 
+
+# PSD parameterization and inverse ----------------------------------------
+
 reals_to_spd_matrix <- function(x, scale=torch_tensor(1.0)) {
   #' Parameterization of a positive definite matrix by a vector
   #' Hijacked from Jean-Benoist Léger's parameterization cookbook 
@@ -90,6 +93,48 @@ print(x$shape)
 z = reals_to_spd_matrix(x, scale = scale)
 x_bis = sdp_matrix_to_reals(z, scale = scale)
 torch_allclose(x, x_bis)
+
+
+
+##################################################################
+##             Simplex parameterization and inverse             ##
+##################################################################
+reals_to_simplex = function(x) {
+  # Stolen and adapted from JB Léger's parameterization cookbook
+  n = x$size()
+  ksi = -log1pexp(x) / torch_arange(n, 1, -1)
+  logvalues = 
+    torch_cat(c(
+      torch_log(-expm1(ksi)), 
+      torch_zeros(1))
+      ) +
+    torch_cat(c(
+      torch_zeros(1), 
+      torch_cumsum(ksi, dim=1))
+      )
+  
+  values = torch_exp(logvalues - logvalues$max())
+  return(values / values$sum())
+}
+
+.revcumsum = function(x) {
+  return(x + torch_sum(x, dim=-1, keepdim=TRUE) - torch_cumsum(x, dim=-1))
+}
+
+simplex_to_reals = function(x) {
+  n = x$size() - 1
+  ksi = - torch_arange(n, 1, -1) * torch_log1p(x[1:n] / .revcumsum(x[2:N]))
+  return(torch_log(- expm1(ksi)) - ksi)
+} 
+kk = 10
+x=torch_randn(kk)
+p = reals_to_simplex(x)
+print(p)
+print(p$shape)
+print(p$sum())
+x_bis = simplex_to_reals(p)
+torch_allclose(x, x_bis)
+(x-x_bis)$abs()$sum()
 
 ELBO_MPCA <- function(Y, O, covariates, M, S, Tau, C, Theta, Lambda_vec, Mu, Pi){
   ## compute the ELBO with a PLN mixture of Commmon PCA parametrization
@@ -246,6 +291,7 @@ VEM_PLNMPCA <- R6Class("VEM_PLNPCA",
                         Mu = NULL,
                         Lambda = NULL,
                         Lambda_vec = NULL, # parametrizatin of Lambda as a vec
+                        Tau_vec = NULL, # parameterization of Tau as a vector in R^{K-1}
                         control_init = NULL,
                         fitted = NULL, 
                         ELBO_list = NULL,
@@ -282,8 +328,8 @@ VEM_PLNMPCA <- R6Class("VEM_PLNPCA",
                           self$Pi = torch_tensor(table(cl) / self$n, requires_grad=FALSE)
                           
                           # Variational parameters q(Z)
-                          self$Tau = torch_tensor(as_indicator(cl) %>% t()) # %>% .clip_proba
-                          
+                          self$Tau = torch_tensor(as_indicator(cl) %>% t()) %>% .clip_proba
+                          # self$Tau_vec = 
                           # Mean \mu_k in latent space
                           PSEUDO_COUNT = 1e-6
                           log_mean_per_cluster = (self$Tau[,,NULL]$multiply(self$Y[NULL,,]) + PSEUDO_COUNT)$mean(2)$log()
@@ -321,7 +367,7 @@ VEM_PLNMPCA <- R6Class("VEM_PLNPCA",
                           self$Lambda_vec$requires_grad = TRUE
                           
                           ## Variational parameters
-                          self$M <- torch_zeros(self$n, self$q, requires_grad = TRUE)
+                          self$M <- torch_randn(self$n, self$q, requires_grad = TRUE)
                           self$S <- torch_ones(self$n, self$q, requires_grad = TRUE)
                           
                           message('Initialization finished.')
@@ -350,8 +396,8 @@ VEM_PLNMPCA <- R6Class("VEM_PLNPCA",
                             
                             # normalize Tau without keeping grad
                             with_no_grad({
-                              self$Tau <- self$Tau$divide(self$Tau$sum(1, keepdim = TRUE)) %>%
-                                .clip_proba()
+                              self$Tau <- self$Tau$divide(self$Tau$sum(1, keepdim = TRUE)) 
+                              # %>% .clip_proba()
                               # project onto stiefel with svd ? self$C 
                             })
                             # weird : here torch set self$Tau$requires_grad to F...
@@ -367,6 +413,7 @@ VEM_PLNMPCA <- R6Class("VEM_PLNPCA",
                               pr('MSE C', MSE(self$C - params$C))
                               pr('MSE Theta', MSE(self$Theta- params$Theta))
                               pr('Change in Lambda_vec', as.numeric((self$Lambda_vec - old_lambda_vec)$sum()))
+                              pr('Change in Tau', as.numeric((self$Tau - old_tau)$sum()))
                               
                             }
                             self$ELBO_list = c(self$ELBO_list, -loss$item()/(self$n))
@@ -448,7 +495,7 @@ if (use_covariates) {
 }
 
 
-n_iter = 1000
+n_iter = 10
 profiled_elbo = FALSE
 
 control_mompca = plnmpca_control_init()
