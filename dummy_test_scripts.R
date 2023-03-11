@@ -1,6 +1,6 @@
 library(purrr)
 source("utils.r")
-n = 7
+n = 20
 K = 2
 q = 4
 p = 20
@@ -10,7 +10,7 @@ M = torch_randn(c(n, q))
 S = torch_randn(c(n, q))
 Mu = torch_randn(c(K, q))
 Tau = torch_randn(c(K,n))
-Pi = torch_randn(c(K))
+Pi = torch_randn(c(K))$abs()
 Pi = Pi / Pi$sum()
 Lambda = torch_randn(c(K, q, q))
 for (k in 1:K) Lambda[k,,] = Lambda[k,,] + Lambda[k,,]$t()
@@ -36,12 +36,13 @@ SSk = (Tau[k,]$t()[, NULL] * SrondS)$sum(dim=1)$diag()
 
 
 cl = kmeans(Y, centers = K, nstart = 10)$cl
-projY = Y %*% as.matrix(C) 
+projY = log(Y +1) %*% as.matrix(C) 
 Mu = sapply(projY %>% as.data.frame() %>% split(cl), colMeans) %>% t() 
 Mu = torch_tensor(Mu, requires_grad = TRUE)
 Mu
 
-Lambda = projY %>% as.data.frame() %>% split(cl) %>% map(cov) %>% simplify2array() %>% aperm(c(3, 1, 2))
+Lambda = projY %>% as.data.frame() %>% split(cl) %>% map(cov) %>%
+  simplify2array() %>% aperm(c(3, 1, 2)) %>% torch_tensor()
 Lambda[k,,]
 dim(Lambda)
 
@@ -58,3 +59,23 @@ torch_nansum(Tau * torch_log(Tau))
 x = Tau[,,NULL]$mul(M[NULL,,])$divide(Tau$sum(2)[,NULL,NULL])
 dim(x)
 dim(x$sum(2)) == c(K, q)
+
+# covariance en torch
+torchY = Y %>% torch_tensor()
+covY = cov(Y) # R cov
+cov_torchY = torchY$t()$cov() # torch cov
+sum(covY - cov_torchY %>% as.matrix) # test near equality
+
+# torch_cov doesn't return exactly symm matrices ?
+torch_equal(cov_torchY, cov_torchY$t())
+
+
+# logtau update
+# shape (K, n, q)
+centeredM = (M[NULL,,] - Mu[,NULL,])
+centeredMLambdaCenteredMt = centeredM[,,NULL,]$matmul(Lambda[,NULL,,]$inverse()$matmul(centeredM[,,,NULL]))$squeeze()
+TrLambdaS = Lambda$diagonal(dim1 = -1, dim2 = -2)[,NULL,]$multiply(S[NULL,])$sum(-1)
+logTau = Pi[,NULL]$log() - .5 * (Lambda$logdet()[,NULL] + centeredMLambdaCenteredMt + TrLambdaS)
+Tau = torch_exp(logTau - logTau$logsumexp(dim = 1))
+Tau$sum(1)
+print(Tau[,1:5])
